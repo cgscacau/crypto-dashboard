@@ -1,4 +1,4 @@
-import streamlit as st
+    import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import time
@@ -49,13 +49,8 @@ class CryptoDataFetcher:
         ohlc = self.ohlc_data[symbol]
         
         # Se é uma nova vela ou primeira vela
-        if (ohlc['current_candle'] is None or 
-            candle_start_time > ohlc['timestamps'][-1] if ohlc['timestamps'] else True):
-            
-            # Finaliza vela anterior se existir
-            if ohlc['current_candle'] is not None:
-                # A vela anterior já está finalizada
-                pass
+        if (len(ohlc['timestamps']) == 0 or 
+            candle_start_time > ohlc['timestamps'][-1]):
             
             # Inicia nova vela
             ohlc['timestamps'].append(candle_start_time)
@@ -63,7 +58,7 @@ class CryptoDataFetcher:
             ohlc['high'].append(price)
             ohlc['low'].append(price)
             ohlc['close'].append(price)
-            ohlc['volume'].append(volume)
+            ohlc['volume'].append(volume if volume > 0 else 1)
             
             ohlc['current_candle'] = {
                 'start_time': candle_start_time,
@@ -71,23 +66,24 @@ class CryptoDataFetcher:
                 'high': price,
                 'low': price,
                 'close': price,
-                'volume': volume
+                'volume': volume if volume > 0 else 1
             }
             
         else:
             # Atualiza vela atual
-            if ohlc['timestamps']:
+            if len(ohlc['timestamps']) > 0:
                 last_idx = -1
                 ohlc['high'][last_idx] = max(ohlc['high'][last_idx], price)
                 ohlc['low'][last_idx] = min(ohlc['low'][last_idx], price)
                 ohlc['close'][last_idx] = price
-                ohlc['volume'][last_idx] = max(ohlc['volume'][last_idx], volume)
+                ohlc['volume'][last_idx] = max(ohlc['volume'][last_idx], volume if volume > 0 else 1)
                 
                 # Atualiza vela atual
-                ohlc['current_candle']['high'] = max(ohlc['current_candle']['high'], price)
-                ohlc['current_candle']['low'] = min(ohlc['current_candle']['low'], price)
-                ohlc['current_candle']['close'] = price
-                ohlc['current_candle']['volume'] = max(ohlc['current_candle']['volume'], volume)
+                if ohlc['current_candle']:
+                    ohlc['current_candle']['high'] = max(ohlc['current_candle']['high'], price)
+                    ohlc['current_candle']['low'] = min(ohlc['current_candle']['low'], price)
+                    ohlc['current_candle']['close'] = price
+                    ohlc['current_candle']['volume'] = max(ohlc['current_candle']['volume'], volume if volume > 0 else 1)
         
         # Limita histórico a 50 velas
         if len(ohlc['timestamps']) > 50:
@@ -393,8 +389,9 @@ if 'data_fetcher' not in st.session_state:
 
 def create_candlestick_chart(symbol, ohlc_data):
     """Cria gráfico de velas (candlestick) para um símbolo"""
-    if symbol not in ohlc_data or not ohlc_data[symbol]['timestamps']:
-        fig = go.Figure()
+    fig = go.Figure()
+    
+    if symbol not in ohlc_data or len(ohlc_data[symbol]['timestamps']) == 0:
         fig.add_annotation(
             text="Carregando velas...", 
             xref="paper", yref="paper",
@@ -406,16 +403,35 @@ def create_candlestick_chart(symbol, ohlc_data):
             height=400,
             title=f'🕯️ {symbol.replace("USDT", "/USD")} - Carregando...',
             paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)'
+            plot_bgcolor='rgba(0,0,0,0)',
+            xaxis_rangeslider_visible=False
         )
         return fig
     
     data = ohlc_data[symbol]
     
-    if not data['timestamps'] or len(data['timestamps']) == 0:
-        return create_candlestick_chart(symbol, {})
-    
-    fig = go.Figure()
+    # Validação de dados
+    if (len(data['timestamps']) == 0 or 
+        len(data['open']) == 0 or 
+        len(data['high']) == 0 or 
+        len(data['low']) == 0 or 
+        len(data['close']) == 0):
+        
+        fig.add_annotation(
+            text="Aguardando dados...", 
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        fig.update_layout(
+            template='plotly_dark',
+            height=400,
+            title=f'🕯️ {symbol.replace("USDT", "/USD")}',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            xaxis_rangeslider_visible=False
+        )
+        return fig
     
     # Adiciona candlestick
     fig.add_trace(go.Candlestick(
@@ -454,10 +470,10 @@ def create_candlestick_chart(symbol, ohlc_data):
             x=data['timestamps'],
             y=sma,
             mode='lines',
-            name=f'SMA({sma_periods})',
+            name=f'SMA(5)',
             line=dict(color='#FFA500', width=2, dash='dash'),
             opacity=0.7,
-            hovertemplate='<b>SMA(%{fullData.name})</b><br>' +
+            hovertemplate='<b>SMA(5)</b><br>' +
                          'Valor: $%{y:,.4f}<br>' +
                          '<extra></extra>'
         ))
@@ -485,9 +501,8 @@ def create_candlestick_chart(symbol, ohlc_data):
     fig.update_layout(xaxis_rangeslider_visible=False)
     
     # Formatar eixo Y baseado nos preços
-    if data['close']:
-        max_price = max(max(data['high']) if data['high'] else [0])
-        min_price = min(min(data['low']) if data['low'] else [0])
+    if len(data['close']) > 0:
+        max_price = max(data['high']) if data['high'] else max(data['close'])
         
         if max_price < 1:
             fig.update_yaxes(tickformat='.6f')
@@ -500,7 +515,7 @@ def create_candlestick_chart(symbol, ohlc_data):
 
 def create_volume_chart(symbol, ohlc_data):
     """Cria gráfico de volume para um símbolo"""
-    if symbol not in ohlc_data or not ohlc_data[symbol]['timestamps']:
+    if symbol not in ohlc_data or len(ohlc_data[symbol]['timestamps']) == 0:
         return None
     
     data = ohlc_data[symbol]
@@ -551,11 +566,11 @@ def create_comparison_chart(symbols, historical_data):
     colors = ['#00D4AA', '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F']
     
     for i, symbol in enumerate(symbols):
-        if symbol in historical_data and historical_data[symbol]['timestamps']:
+        if symbol in historical_data and len(historical_data[symbol]['timestamps']) > 0:
             timestamps = historical_data[symbol]['timestamps']
             prices = historical_data[symbol]['prices']
             
-            if prices and len(prices) > 1:
+            if len(prices) > 1:
                 base_price = prices[0]
                 normalized_prices = [(p - base_price) / base_price * 100 for p in prices]
                 
@@ -676,7 +691,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**📊 Opções de Visualização:**")
     show_volume = st.checkbox("Mostrar Volume", value=True)
-    show_sma = st.checkbox("Mostrar Média Móvel", value=True)
+    show_comparison = st.checkbox("Mostrar Comparação", value=True)
     
     # Informações sobre APIs
     st.markdown("---")
@@ -739,8 +754,43 @@ if selected_symbols and current_data:
             if volume_fig:
                 st.plotly_chart(volume_fig, use_container_width=True)
     
-    elif num_selected <= 4:
-        # Dois por linha
+    elif num_selected == 2:
+        # Dois gráficos lado a lado
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            symbol = selected_symbols[0]
+            candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
+            st.plotly_chart(candlestick_fig, use_container_width=True)
+            
+            if show_volume:
+                volume_fig = create_volume_chart(symbol, ohlc_data)
+                if volume_fig:
+                    st.plotly_chart(volume_fig, use_container_width=True)
+        
+        with col2:
+            symbol = selected_symbols[1]
+            candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
+            st.plotly_chart(candlestick_fig, use_container_width=True)
+            
+            if show_volume:
+                volume_fig = create_volume_chart(symbol, ohlc_data)
+                if volume_fig:
+                    st.plotly_chart(volume_fig, use_container_width=True)
+    
+    elif num_selected == 3:
+        # Três gráficos em linha
+        for symbol in selected_symbols:
+            candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
+            st.plotly_chart(candlestick_fig, use_container_width=True)
+            
+            if show_volume:
+                volume_fig = create_volume_chart(symbol, ohlc_data)
+                if volume_fig:
+                    st.plotly_chart(volume_fig, use_container_width=True)
+    
+    else:
+        # Mais de 3: dois por linha
         for i in range(0, num_selected, 2):
             col1, col2 = st.columns(2)
             
@@ -766,31 +816,8 @@ if selected_symbols and current_data:
                         if volume_fig:
                             st.plotly_chart(volume_fig, use_container_width=True)
     
-    else:
-        # Três por linha para mais de 4
-        for i in range(0, num_selected, 3):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                if i < num_selected:
-                    symbol = selected_symbols[i]
-                    candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-                    st.plotly_chart(candlestick_fig, use_container_width=True)
-            
-            with col2:
-                if i + 1 < num_selected:
-                    symbol = selected_symbols[i + 1]
-                    candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-                    st.plotly_chart(candlestick_fig, use_container_width=True)
-                    
-            with col3:
-                if i + 2 < num_selected:
-                    symbol = selected_symbols[i + 2]
-                    candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-                    st.plotly_chart(candlestick_fig, use_container_width=True)
-    
-    # Gráfico de comparação (mantém linha)
-    if num_selected > 1:
+    # Gráfico de comparação
+    if num_selected > 1 and show_comparison:
         st.markdown("---")
         comparison_fig = create_comparison_chart(selected_symbols, historical_data)
         st.plotly_chart(comparison_fig, use_container_width=True)
@@ -800,10 +827,10 @@ if selected_symbols and current_data:
     st.subheader("📊 Estatísticas das Velas")
     
     for symbol in selected_symbols:
-        if symbol in ohlc_data and ohlc_data[symbol]['timestamps']:
+        if symbol in ohlc_data and len(ohlc_data[symbol]['timestamps']) > 0:
             data = ohlc_data[symbol]
             
-            if data['close']:
+            if len(data['close']) > 0:
                 with st.expander(f"📈 {symbol.replace('USDT', '/USD')} - Detalhes"):
                     col1, col2, col3, col4 = st.columns(4)
                     
@@ -811,17 +838,17 @@ if selected_symbols and current_data:
                         st.metric("🕯️ Total de Velas", len(data['timestamps']))
                     
                     with col2:
-                        if data['high']:
+                        if len(data['high']) > 0:
                             max_high = max(data['high'])
                             st.metric("⬆️ Máxima", f"${max_high:,.4f}")
                     
                     with col3:
-                        if data['low']:
+                        if len(data['low']) > 0:
                             min_low = min(data['low'])
                             st.metric("⬇️ Mínima", f"${min_low:,.4f}")
                     
                     with col4:
-                        if data['close'] and len(data['close']) > 1:
+                        if len(data['close']) > 1:
                             price_change = ((data['close'][-1] - data['close'][0]) / data['close'][0]) * 100
                             st.metric("📈 Variação Total", f"{price_change:+.2f}%")
     
@@ -921,7 +948,9 @@ else:
         template='plotly_dark',
         height=400,
         showlegend=False,
-        xaxis_rangeslider_visible=False
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
     )
     
     st.plotly_chart(demo_fig, use_container_width=True)
@@ -936,3 +965,4 @@ if auto_refresh and st.session_state.data_fetcher.is_running():
 # Footer
 st.markdown("---")
 st.markdown("💡 **Dashboard de Criptomoedas com Análise Técnica** - Gráficos de velas em tempo real | Dados de CoinGecko, CryptoCompare e CoinAPI")
+    
