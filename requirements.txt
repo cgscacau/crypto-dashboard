@@ -1,9 +1,7 @@
-streamlit
-websocket-client
-pandas
-plotly
-python-binance
-asyncio-mqtt
-threading
-json
-time
+streamlit>=1.28.0
+websocket-client>=1.6.0
+pandas>=2.0.0
+plotly>=5.0.0
+python-binance>=1.0.19
+numpy>=1.24.0
+
