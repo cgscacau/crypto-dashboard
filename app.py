@@ -20,9 +20,13 @@ class CryptoDataFetcher:
         self.price_data = {}
         self.historical_data = {}
         self.ohlc_data = {}
+        self.renko_data = {}
+        self.point_data = {}
         self.running = False
         self.symbols = []
         self.candle_interval = 60  # segundos para cada vela
+        self.brick_size = None  # para Renko
+        self.point_size = None  # para Point and Figure
         
     def init_ohlc_data(self, symbol):
         """Inicializa estrutura de dados OHLC para um símbolo"""
@@ -35,6 +39,31 @@ class CryptoDataFetcher:
                 'close': [],
                 'volume': [],
                 'current_candle': None
+            }
+    
+    def init_renko_data(self, symbol):
+        """Inicializa estrutura de dados Renko para um símbolo"""
+        if symbol not in self.renko_data:
+            self.renko_data[symbol] = {
+                'timestamps': [],
+                'open': [],
+                'close': [],
+                'high': [],
+                'low': [],
+                'color': [],  # 'up' ou 'down'
+                'last_brick_close': None
+            }
+    
+    def init_point_data(self, symbol):
+        """Inicializa estrutura de dados Point and Figure para um símbolo"""
+        if symbol not in self.point_data:
+            self.point_data[symbol] = {
+                'x': [],
+                'y': [],
+                'marker': [],  # 'X' para alta, 'O' para baixa
+                'last_price': None,
+                'last_marker': None,
+                'column': 0
             }
     
     def update_ohlc_candle(self, symbol, price, volume, timestamp):
@@ -93,7 +122,131 @@ class CryptoDataFetcher:
             ohlc['low'].pop(0)
             ohlc['close'].pop(0)
             ohlc['volume'].pop(0)
+    
+    def update_renko_data(self, symbol, price, timestamp):
+        """Atualiza dados Renko com novos preços"""
+        self.init_renko_data(symbol)
         
+        if self.brick_size is None or self.brick_size <= 0:
+            return
+        
+        renko = self.renko_data[symbol]
+        
+        # Primeira vela
+        if renko['last_brick_close'] is None:
+            renko['timestamps'].append(timestamp)
+            renko['open'].append(price)
+            renko['close'].append(price)
+            renko['high'].append(price)
+            renko['low'].append(price)
+            renko['color'].append('neutral')
+            renko['last_brick_close'] = price
+            return
+        
+        current_price = price
+        last_close = renko['last_brick_close']
+        
+        # Calcula quantos bricks se moveram
+        num_bricks = abs(current_price - last_close) / self.brick_size
+        
+        if num_bricks >= 1:
+            # Determina direção
+            if current_price > last_close:
+                direction = 'up'
+            else:
+                direction = 'down'
+            
+            # Cria novos bricks
+            num_bricks_int = int(num_bricks)
+            for i in range(num_bricks_int):
+                if direction == 'up':
+                    brick_open = last_close + (i * self.brick_size)
+                    brick_close = brick_open + self.brick_size
+                    brick_high = brick_close
+                    brick_low = brick_open
+                else:
+                    brick_open = last_close - (i * self.brick_size)
+                    brick_close = brick_open - self.brick_size
+                    brick_high = brick_open
+                    brick_low = brick_close
+                
+                renko['timestamps'].append(timestamp)
+                renko['open'].append(brick_open)
+                renko['close'].append(brick_close)
+                renko['high'].append(brick_high)
+                renko['low'].append(brick_low)
+                renko['color'].append(direction)
+                renko['last_brick_close'] = brick_close
+        
+        # Limita histórico
+        if len(renko['timestamps']) > 50:
+            renko['timestamps'].pop(0)
+            renko['open'].pop(0)
+            renko['close'].pop(0)
+            renko['high'].pop(0)
+            renko['low'].pop(0)
+            renko['color'].pop(0)
+    
+    def update_point_data(self, symbol, price, timestamp):
+        """Atualiza dados Point and Figure"""
+        self.init_point_data(symbol)
+        
+        if self.point_size is None or self.point_size <= 0:
+            return
+        
+        pf = self.point_data[symbol]
+        
+        # Primeira vela
+        if pf['last_price'] is None:
+            pf['last_price'] = price
+            pf['last_marker'] = 'X' if price > 0 else 'O'
+            pf['x'].append(pf['column'])
+            pf['y'].append(price)
+            pf['marker'].append(pf['last_marker'])
+            return
+        
+        current_price = price
+        last_price = pf['last_price']
+        
+        # Calcula mudança em pontos
+        point_change = abs(current_price - last_price) / self.point_size
+        
+        if point_change >= 1:
+            if current_price > last_price:
+                # Movimento para cima
+                new_marker = 'X'
+                if pf['last_marker'] != 'X':
+                    # Muda de coluna
+                    pf['column'] += 1
+                    pf['last_marker'] = 'X'
+            else:
+                # Movimento para baixo
+                new_marker = 'O'
+                if pf['last_marker'] != 'O':
+                    # Muda de coluna
+                    pf['column'] += 1
+                    pf['last_marker'] = 'O'
+            
+            # Adiciona pontos
+            num_points = int(point_change)
+            for i in range(num_points):
+                if current_price > last_price:
+                    point_value = last_price + ((i + 1) * self.point_size)
+                else:
+                    point_value = last_price - ((i + 1) * self.point_size)
+                
+                pf['x'].append(pf['column'])
+                pf['y'].append(point_value)
+                pf['marker'].append(new_marker)
+            
+            pf['last_price'] = current_price
+        
+        # Limita histórico
+        if len(pf['x']) > 100:
+            pf['x'].pop(0)
+            pf['y'].pop(0)
+            pf['marker'].pop(0)
+    
     def fetch_coingecko_data(self, symbols):
         """Busca dados do CoinGecko (API gratuita e global)"""
         try:
@@ -154,6 +307,12 @@ class CryptoDataFetcher:
                         
                         # Atualiza dados OHLC
                         self.update_ohlc_candle(symbol, price, volume, current_time)
+                        
+                        # Atualiza dados Renko
+                        self.update_renko_data(symbol, price, current_time)
+                        
+                        # Atualiza dados Point and Figure
+                        self.update_point_data(symbol, price, current_time)
                         
                         # Atualiza histórico de linha (para comparação)
                         if symbol not in self.historical_data:
@@ -234,6 +393,12 @@ class CryptoDataFetcher:
                             # Atualiza dados OHLC
                             self.update_ohlc_candle(symbol, price, volume, current_time)
                             
+                            # Atualiza dados Renko
+                            self.update_renko_data(symbol, price, current_time)
+                            
+                            # Atualiza dados Point and Figure
+                            self.update_point_data(symbol, price, current_time)
+                            
                             # Atualiza histórico de linha
                             if symbol not in self.historical_data:
                                 self.historical_data[symbol] = {'timestamps': [], 'prices': []}
@@ -307,6 +472,12 @@ class CryptoDataFetcher:
                             # Atualiza dados OHLC
                             self.update_ohlc_candle(symbol, price, 0, current_time)
                             
+                            # Atualiza dados Renko
+                            self.update_renko_data(symbol, price, current_time)
+                            
+                            # Atualiza dados Point and Figure
+                            self.update_point_data(symbol, price, current_time)
+                            
                             # Atualiza histórico de linha
                             if symbol not in self.historical_data:
                                 self.historical_data[symbol] = {'timestamps': [], 'prices': []}
@@ -332,10 +503,12 @@ class CryptoDataFetcher:
             print(f"Erro CoinAPI: {str(e)}")
             return False
     
-    def start_fetching(self, symbols, candle_interval=60):
+    def start_fetching(self, symbols, candle_interval=60, brick_size=None, point_size=None):
         """Inicia busca de dados com fallbacks"""
         self.symbols = symbols
         self.candle_interval = candle_interval
+        self.brick_size = brick_size
+        self.point_size = point_size
         self.running = True
         
         # Tenta múltiplas APIs em ordem de preferência
@@ -357,6 +530,8 @@ class CryptoDataFetcher:
         self.price_data.clear()
         self.historical_data.clear()
         self.ohlc_data.clear()
+        self.renko_data.clear()
+        self.point_data.clear()
     
     def update_data(self):
         """Atualiza dados"""
@@ -377,6 +552,14 @@ class CryptoDataFetcher:
     def get_ohlc_data(self):
         """Retorna dados OHLC"""
         return self.ohlc_data
+    
+    def get_renko_data(self):
+        """Retorna dados Renko"""
+        return self.renko_data
+    
+    def get_point_data(self):
+        """Retorna dados Point and Figure"""
+        return self.point_data
     
     def is_running(self):
         """Verifica se está ativo"""
@@ -513,6 +696,187 @@ def create_candlestick_chart(symbol, ohlc_data):
     
     return fig
 
+def create_renko_chart(symbol, renko_data):
+    """Cria gráfico Renko para um símbolo"""
+    fig = go.Figure()
+    
+    if symbol not in renko_data or len(renko_data[symbol]['timestamps']) == 0:
+        fig.add_annotation(
+            text="Carregando Renko...", 
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        fig.update_layout(
+            template='plotly_dark',
+            height=400,
+            title=f'🧱 {symbol.replace("USDT", "/USD")} - Gráfico Renko - Carregando...',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
+        )
+        return fig
+    
+    data = renko_data[symbol]
+    
+    if len(data['timestamps']) == 0:
+        fig.add_annotation(
+            text="Aguardando dados...", 
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        fig.update_layout(
+            template='plotly_dark',
+            height=400,
+            title=f'🧱 {symbol.replace("USDT", "/USD")} - Gráfico Renko',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
+        )
+        return fig
+    
+    # Cria candlesticks Renko
+    fig.add_trace(go.Candlestick(
+        x=list(range(len(data['timestamps']))),
+        open=data['open'],
+        high=data['high'],
+        low=data['low'],
+        close=data['close'],
+        name=symbol.replace('USDT', ''),
+        increasing_line_color='#00D4AA',
+        decreasing_line_color='#FF6B6B',
+        increasing_fillcolor='#00D4AA',
+        decreasing_fillcolor='#FF6B6B',
+        line=dict(width=2),
+        hovertemplate='<b>Renko Brick</b><br>' +
+                     'Abertura: $%{open:,.4f}<br>' +
+                     'Máxima: $%{high:,.4f}<br>' +
+                     'Mínima: $%{low:,.4f}<br>' +
+                     'Fechamento: $%{close:,.4f}<br>' +
+                     '<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title=f'🧱 {symbol.replace("USDT", "/USD")} - Gráfico Renko',
+        xaxis_title='Brick #',
+        yaxis_title='Preço (USD)',
+        template='plotly_dark',
+        height=400,
+        showlegend=False,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=0, r=0, t=40, b=0),
+        xaxis_rangeslider_visible=False
+    )
+    
+    return fig
+
+def create_point_figure_chart(symbol, point_data):
+    """Cria gráfico Point and Figure para um símbolo"""
+    fig = go.Figure()
+    
+    if symbol not in point_data or len(point_data[symbol]['x']) == 0:
+        fig.add_annotation(
+            text="Carregando Point & Figure...", 
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        fig.update_layout(
+            template='plotly_dark',
+            height=400,
+            title=f'📊 {symbol.replace("USDT", "/USD")} - Point & Figure - Carregando...',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
+        )
+        return fig
+    
+    data = point_data[symbol]
+    
+    if len(data['x']) == 0:
+        fig.add_annotation(
+            text="Aguardando dados...", 
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color="gray")
+        )
+        fig.update_layout(
+            template='plotly_dark',
+            height=400,
+            title=f'📊 {symbol.replace("USDT", "/USD")} - Point & Figure',
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)'
+        )
+        return fig
+    
+    # Separa X's e O's
+    x_points = {'x': [], 'y': [], 'text': []}
+    o_points = {'x': [], 'y': [], 'text': []}
+    
+    for i, marker in enumerate(data['marker']):
+        if marker == 'X':
+            x_points['x'].append(data['x'][i])
+            x_points['y'].append(data['y'][i])
+            x_points['text'].append('X')
+        else:
+            o_points['x'].append(data['x'][i])
+            o_points['y'].append(data['y'][i])
+            o_points['text'].append('O')
+    
+    # Adiciona X's
+    if x_points['x']:
+        fig.add_trace(go.Scatter(
+            x=x_points['x'],
+            y=x_points['y'],
+            mode='markers+text',
+            name='Alta (X)',
+            marker=dict(size=15, color='#00D4AA', symbol='circle'),
+            text=x_points['text'],
+            textposition='middle center',
+            textfont=dict(size=12, color='black', family='Arial Black'),
+            hovertemplate='<b>Alta (X)</b><br>' +
+                         'Coluna: %{x}<br>' +
+                         'Preço: $%{y:,.4f}<br>' +
+                         '<extra></extra>'
+        ))
+    
+    # Adiciona O's
+    if o_points['x']:
+        fig.add_trace(go.Scatter(
+            x=o_points['x'],
+            y=o_points['y'],
+            mode='markers+text',
+            name='Baixa (O)',
+            marker=dict(size=15, color='#FF6B6B', symbol='circle'),
+            text=o_points['text'],
+            textposition='middle center',
+            textfont=dict(size=12, color='white', family='Arial Black'),
+            hovertemplate='<b>Baixa (O)</b><br>' +
+                         'Coluna: %{x}<br>' +
+                         'Preço: $%{y:,.4f}<br>' +
+                         '<extra></extra>'
+        ))
+    
+    fig.update_layout(
+        title=f'📊 {symbol.replace("USDT", "/USD")} - Point & Figure',
+        xaxis_title='Coluna',
+        yaxis_title='Preço (USD)',
+        template='plotly_dark',
+        height=400,
+        showlegend=True,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=0, r=0, t=40, b=0),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="left",
+            x=0
+        )
+    )
+    
+    return fig
+
 def create_volume_chart(symbol, ohlc_data):
     """Cria gráfico de volume para um símbolo"""
     if symbol not in ohlc_data or len(ohlc_data[symbol]['timestamps']) == 0:
@@ -560,7 +924,7 @@ def create_volume_chart(symbol, ohlc_data):
     return fig
 
 def create_comparison_chart(symbols, historical_data):
-    """Cria gráfico comparativo normalizado (mantém linha para comparação)"""
+    """Cria gráfico comparativo normalizado"""
     fig = go.Figure()
     
     colors = ['#00D4AA', '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F']
@@ -611,8 +975,8 @@ def create_comparison_chart(symbols, historical_data):
     return fig
 
 # Interface principal
-st.title("🕯️ Dashboard de Criptomoedas - Gráfico de Velas")
-st.markdown("*Análise técnica com candlesticks em tempo real*")
+st.title("🕯️ Dashboard de Criptomoedas - Múltiplos Gráficos")
+st.markdown("*Análise técnica com Candlesticks, Renko e Point & Figure*")
 st.markdown("---")
 
 # Sidebar para configurações
@@ -633,13 +997,67 @@ with st.sidebar:
         max_selections=6
     )
     
-    # Configuração do timeframe das velas
-    st.markdown("**🕯️ Configuração das Velas:**")
-    candle_interval = st.selectbox(
-        "Intervalo das velas:",
-        options=[30, 60, 120, 300, 600],
-        index=1,
-        format_func=lambda x: f"{x}s" if x < 60 else f"{x//60}min"
+    st.markdown("---")
+    
+    # Seleção do tipo de gráfico
+    st.markdown("**📊 Tipo de Gráfico:**")
+    chart_type = st.radio(
+        "Escolha o tipo de gráfico:",
+        options=['Candlestick (OHLC)', 'Renko', 'Point & Figure'],
+        index=0
+    )
+    
+    st.markdown("---")
+    
+    # Configurações específicas por tipo de gráfico
+    if chart_type == 'Candlestick (OHLC)':
+        st.markdown("**🕯️ Configuração Candlestick:**")
+        candle_interval = st.selectbox(
+            "Intervalo das velas:",
+            options=[30, 60, 120, 300, 600],
+            index=1,
+            format_func=lambda x: f"{x}s" if x < 60 else f"{x//60}min"
+        )
+        brick_size = None
+        point_size = None
+    
+    elif chart_type == 'Renko':
+        st.markdown("**🧱 Configuração Renko:**")
+        brick_size = st.number_input(
+            "Tamanho do Brick (USD):",
+            min_value=0.01,
+            max_value=1000.0,
+            value=100.0,
+            step=10.0,
+            help="Define o tamanho de cada brick em USD"
+        )
+        candle_interval = 60
+        point_size = None
+    
+    else:  # Point & Figure
+        st.markdown("**📊 Configuração Point & Figure:**")
+        point_size = st.number_input(
+            "Tamanho do Ponto (USD):",
+            min_value=0.01,
+            max_value=1000.0,
+            value=50.0,
+            step=10.0,
+            help="Define o tamanho de cada ponto em USD"
+        )
+        candle_interval = 60
+        brick_size = None
+    
+    st.markdown("---")
+    
+    # Intervalo de atualização (1 a 15 segundos)
+    st.markdown("**⏱️ Intervalo de Atualização:**")
+    refresh_interval = st.slider(
+        "Segundos entre atualizações:",
+        min_value=1,
+        max_value=15,
+        value=5,
+        step=1,
+        help="Escolha entre 1 e 15 segundos"
     )
     
     st.markdown("---")
@@ -651,7 +1069,12 @@ with st.sidebar:
         if st.button("🚀 Iniciar", type="primary", use_container_width=True):
             if selected_symbols:
                 with st.spinner("🔄 Buscando dados..."):
-                    success = st.session_state.data_fetcher.start_fetching(selected_symbols, candle_interval)
+                    success = st.session_state.data_fetcher.start_fetching(
+                        selected_symbols, 
+                        candle_interval=candle_interval,
+                        brick_size=brick_size,
+                        point_size=point_size
+                    )
                     if success:
                         st.success("✅ Dados carregados!")
                         st.balloons()
@@ -672,23 +1095,18 @@ with st.sidebar:
     # Status
     if st.session_state.data_fetcher.is_running():
         st.success("🟢 Dashboard Ativo")
-        st.info(f"🕯️ Velas de {candle_interval}s")
+        if chart_type == 'Candlestick (OHLC)':
+            st.info(f"🕯️ Velas de {candle_interval}s")
+        elif chart_type == 'Renko':
+            st.info(f"🧱 Brick de ${brick_size:.2f}")
+        else:
+            st.info(f"📊 Ponto de ${point_size:.2f}")
     else:
         st.error("🔴 Dashboard Inativo")
     
     st.markdown("---")
     
-    # Configurações de atualização
-    auto_refresh = st.checkbox("🔄 Auto-refresh", value=True)
-    refresh_interval = st.select_slider(
-        "⏱️ Intervalo de atualização:",
-        options=[15, 30, 60, 120, 300],
-        value=30,
-        format_func=lambda x: f"{x}s" if x < 60 else f"{x//60}min"
-    )
-    
     # Opções de visualização
-    st.markdown("---")
     st.markdown("**📊 Opções de Visualização:**")
     show_volume = st.checkbox("Mostrar Volume", value=True)
     show_comparison = st.checkbox("Mostrar Comparação", value=True)
@@ -703,6 +1121,8 @@ with st.sidebar:
 # Área principal
 current_data, historical_data = st.session_state.data_fetcher.get_data()
 ohlc_data = st.session_state.data_fetcher.get_ohlc_data()
+renko_data = st.session_state.data_fetcher.get_renko_data()
+point_data = st.session_state.data_fetcher.get_point_data()
 
 if selected_symbols and current_data:
     
@@ -737,28 +1157,13 @@ if selected_symbols and current_data:
     
     st.markdown("---")
     
-    # Gráficos de velas
-    st.subheader("🕯️ Gráficos de Velas (Candlestick)")
-    
-    num_selected = len(selected_symbols)
-    
-    if num_selected == 1:
-        # Um gráfico grande
-        symbol = selected_symbols[0]
-        candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-        st.plotly_chart(candlestick_fig, use_container_width=True)
+    # Gráficos baseados no tipo selecionado
+    if chart_type == 'Candlestick (OHLC)':
+        st.subheader("🕯️ Gráficos de Velas (Candlestick)")
         
-        # Volume se habilitado
-        if show_volume:
-            volume_fig = create_volume_chart(symbol, ohlc_data)
-            if volume_fig:
-                st.plotly_chart(volume_fig, use_container_width=True)
-    
-    elif num_selected == 2:
-        # Dois gráficos lado a lado
-        col1, col2 = st.columns(2)
+        num_selected = len(selected_symbols)
         
-        with col1:
+        if num_selected == 1:
             symbol = selected_symbols[0]
             candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
             st.plotly_chart(candlestick_fig, use_container_width=True)
@@ -768,91 +1173,120 @@ if selected_symbols and current_data:
                 if volume_fig:
                     st.plotly_chart(volume_fig, use_container_width=True)
         
-        with col2:
-            symbol = selected_symbols[1]
-            candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-            st.plotly_chart(candlestick_fig, use_container_width=True)
-            
-            if show_volume:
-                volume_fig = create_volume_chart(symbol, ohlc_data)
-                if volume_fig:
-                    st.plotly_chart(volume_fig, use_container_width=True)
-    
-    elif num_selected == 3:
-        # Três gráficos em linha
-        for symbol in selected_symbols:
-            candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-            st.plotly_chart(candlestick_fig, use_container_width=True)
-            
-            if show_volume:
-                volume_fig = create_volume_chart(symbol, ohlc_data)
-                if volume_fig:
-                    st.plotly_chart(volume_fig, use_container_width=True)
-    
-    else:
-        # Mais de 3: dois por linha
-        for i in range(0, num_selected, 2):
+        elif num_selected == 2:
             col1, col2 = st.columns(2)
             
             with col1:
-                if i < num_selected:
-                    symbol = selected_symbols[i]
-                    candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-                    st.plotly_chart(candlestick_fig, use_container_width=True)
-                    
-                    if show_volume:
-                        volume_fig = create_volume_chart(symbol, ohlc_data)
-                        if volume_fig:
-                            st.plotly_chart(volume_fig, use_container_width=True)
+                symbol = selected_symbols[0]
+                candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
+                st.plotly_chart(candlestick_fig, use_container_width=True)
             
             with col2:
-                if i + 1 < num_selected:
-                    symbol = selected_symbols[i + 1]
-                    candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
-                    st.plotly_chart(candlestick_fig, use_container_width=True)
-                    
-                    if show_volume:
-                        volume_fig = create_volume_chart(symbol, ohlc_data)
-                        if volume_fig:
-                            st.plotly_chart(volume_fig, use_container_width=True)
+                symbol = selected_symbols[1]
+                candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
+                st.plotly_chart(candlestick_fig, use_container_width=True)
+        
+        else:
+            for i in range(0, num_selected, 2):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if i < num_selected:
+                        symbol = selected_symbols[i]
+                        candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
+                        st.plotly_chart(candlestick_fig, use_container_width=True)
+                
+                with col2:
+                    if i + 1 < num_selected:
+                        symbol = selected_symbols[i + 1]
+                        candlestick_fig = create_candlestick_chart(symbol, ohlc_data)
+                        st.plotly_chart(candlestick_fig, use_container_width=True)
+    
+    elif chart_type == 'Renko':
+        st.subheader("🧱 Gráficos Renko")
+        
+        num_selected = len(selected_symbols)
+        
+        if num_selected == 1:
+            symbol = selected_symbols[0]
+            renko_fig = create_renko_chart(symbol, renko_data)
+            st.plotly_chart(renko_fig, use_container_width=True)
+        
+        elif num_selected == 2:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                symbol = selected_symbols[0]
+                renko_fig = create_renko_chart(symbol, renko_data)
+                st.plotly_chart(renko_fig, use_container_width=True)
+            
+            with col2:
+                symbol = selected_symbols[1]
+                renko_fig = create_renko_chart(symbol, renko_data)
+                st.plotly_chart(renko_fig, use_container_width=True)
+        
+        else:
+            for i in range(0, num_selected, 2):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if i < num_selected:
+                        symbol = selected_symbols[i]
+                        renko_fig = create_renko_chart(symbol, renko_data)
+                        st.plotly_chart(renko_fig, use_container_width=True)
+                
+                with col2:
+                    if i + 1 < num_selected:
+                        symbol = selected_symbols[i + 1]
+                        renko_fig = create_renko_chart(symbol, renko_data)
+                        st.plotly_chart(renko_fig, use_container_width=True)
+    
+    else:  # Point & Figure
+        st.subheader("📊 Gráficos Point & Figure")
+        
+        num_selected = len(selected_symbols)
+        
+        if num_selected == 1:
+            symbol = selected_symbols[0]
+            pf_fig = create_point_figure_chart(symbol, point_data)
+            st.plotly_chart(pf_fig, use_container_width=True)
+        
+        elif num_selected == 2:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                symbol = selected_symbols[0]
+                pf_fig = create_point_figure_chart(symbol, point_data)
+                st.plotly_chart(pf_fig, use_container_width=True)
+            
+            with col2:
+                symbol = selected_symbols[1]
+                pf_fig = create_point_figure_chart(symbol, point_data)
+                st.plotly_chart(pf_fig, use_container_width=True)
+        
+        else:
+            for i in range(0, num_selected, 2):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if i < num_selected:
+                        symbol = selected_symbols[i]
+                        pf_fig = create_point_figure_chart(symbol, point_data)
+                        st.plotly_chart(pf_fig, use_container_width=True)
+                
+                with col2:
+                    if i + 1 < num_selected:
+                        symbol = selected_symbols[i + 1]
+                        pf_fig = create_point_figure_chart(symbol, point_data)
+                        st.plotly_chart(pf_fig, use_container_width=True)
     
     # Gráfico de comparação
-    if num_selected > 1 and show_comparison:
+    if len(selected_symbols) > 1 and show_comparison:
         st.markdown("---")
         comparison_fig = create_comparison_chart(selected_symbols, historical_data)
         st.plotly_chart(comparison_fig, use_container_width=True)
     
-    # Estatísticas OHLC
-    st.markdown("---")
-    st.subheader("📊 Estatísticas das Velas")
-    
-    for symbol in selected_symbols:
-        if symbol in ohlc_data and len(ohlc_data[symbol]['timestamps']) > 0:
-            data = ohlc_data[symbol]
-            
-            if len(data['close']) > 0:
-                with st.expander(f"📈 {symbol.replace('USDT', '/USD')} - Detalhes"):
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("🕯️ Total de Velas", len(data['timestamps']))
-                    
-                    with col2:
-                        if len(data['high']) > 0:
-                            max_high = max(data['high'])
-                            st.metric("⬆️ Máxima", f"${max_high:,.4f}")
-                    
-                    with col3:
-                        if len(data['low']) > 0:
-                            min_low = min(data['low'])
-                            st.metric("⬇️ Mínima", f"${min_low:,.4f}")
-                    
-                    with col4:
-                        if len(data['close']) > 1:
-                            price_change = ((data['close'][-1] - data['close'][0]) / data['close'][0]) * 100
-                            st.metric("📈 Variação Total", f"{price_change:+.2f}%")
-    
-    # Estatísticas gerais
+    # Estatísticas
     st.markdown("---")
     col1, col2, col3, col4 = st.columns(4)
     
@@ -866,8 +1300,15 @@ if selected_symbols and current_data:
             st.metric("🕒 Última Atualização", f"{seconds_ago}s atrás")
     
     with col3:
-        total_candles = sum([len(ohlc_data.get(s, {}).get('timestamps', [])) for s in selected_symbols])
-        st.metric("🕯️ Total de Velas", total_candles)
+        if chart_type == 'Candlestick (OHLC)':
+            total_items = sum([len(ohlc_data.get(s, {}).get('timestamps', [])) for s in selected_symbols])
+            st.metric("🕯️ Total de Velas", total_items)
+        elif chart_type == 'Renko':
+            total_items = sum([len(renko_data.get(s, {}).get('timestamps', [])) for s in selected_symbols])
+            st.metric("🧱 Total de Bricks", total_items)
+        else:
+            total_items = sum([len(point_data.get(s, {}).get('x', [])) for s in selected_symbols])
+            st.metric("📊 Total de Pontos", total_items)
     
     with col4:
         if current_data:
@@ -875,7 +1316,6 @@ if selected_symbols and current_data:
             st.metric("📈 Média de Variação", f"{avg_change:+.2f}%")
 
 elif selected_symbols and st.session_state.data_fetcher.is_running():
-    # Conectado mas sem dados ainda
     st.info("🔄 Dashboard ativo! Aguardando próxima atualização de dados...")
     
     with st.spinner("Carregando dados das APIs..."):
@@ -883,7 +1323,6 @@ elif selected_symbols and st.session_state.data_fetcher.is_running():
         st.rerun()
 
 else:
-    # Tela inicial
     st.info("👈 **Selecione as criptomoedas** na barra lateral e clique em **'Iniciar'** para começar!")
     
     st.subheader("🌟 Recursos do Dashboard:")
@@ -892,8 +1331,8 @@ else:
     
     with col1:
         st.markdown("""
-        **🕯️ Análise Técnica**
-        - Gráficos de velas (OHLC)
+        **🕯️ Candlestick (OHLC)**
+        - Gráficos de velas tradicionais
         - Média móvel simples
         - Análise de volume
         - Timeframes configuráveis
@@ -901,62 +1340,37 @@ else:
     
     with col2:
         st.markdown("""
-        **📊 Visualizações**
-        - Candlesticks interativos
-        - Gráficos de volume
-        - Comparação de performance
-        - Layout responsivo
+        **🧱 Renko**
+        - Ignora tempo e volume
+        - Foca em preço
+        - Bricks de tamanho configurável
+        - Identifica tendências
         """)
     
     with col3:
         st.markdown("""
-        **🌐 APIs Confiáveis**
-        - CoinGecko (principal)
-        - CryptoCompare (backup)
-        - CoinAPI (backup)
-        - Cobertura global
+        **📊 Point & Figure**
+        - X para alta, O para baixa
+        - Ponto configurável
+        - Análise de suporte/resistência
+        - Identifica padrões
         """)
     
-    # Demo com dados OHLC fictícios
     st.markdown("---")
-    st.subheader("🎮 Preview do Dashboard:")
+    st.subheader("📋 Comparação dos Gráficos:")
     
-    # Cria dados demo OHLC
-    demo_times = pd.date_range(start='2024-01-01 10:00:00', periods=10, freq='1H')
-    demo_open = [45000, 45100, 45050, 45200, 45150, 45300, 45250, 45400, 45350, 45500]
-    demo_high = [45150, 45200, 45150, 45300, 45250, 45400, 45350, 45500, 45450, 45600]
-    demo_low = [44950, 45000, 44950, 45100, 45050, 45200, 45150, 45300, 45250, 45400]
-    demo_close = [45100, 45050, 45200, 45150, 45300, 45250, 45400, 45350, 45500, 45450]
+    comparison_data = {
+        "Tipo": ["Candlestick", "Renko", "Point & Figure"],
+        "Melhor Para": ["Análise geral", "Tendências fortes", "Suporte/Resistência"],
+        "Considera Tempo": ["Sim", "Não", "Não"],
+        "Considera Volume": ["Sim", "Não", "Não"],
+        "Complexidade": ["Média", "Baixa", "Média"]
+    }
     
-    demo_fig = go.Figure()
-    
-    demo_fig.add_trace(go.Candlestick(
-        x=demo_times,
-        open=demo_open,
-        high=demo_high,
-        low=demo_low,
-        close=demo_close,
-        name='BTC/USD (Demo)',
-        increasing_line_color='#00D4AA',
-        decreasing_line_color='#FF6B6B',
-        increasing_fillcolor='#00D4AA',
-        decreasing_fillcolor='#FF6B6B'
-    ))
-    
-    demo_fig.update_layout(
-        title='🕯️ Exemplo: Bitcoin/USD - Gráfico de Velas',
-        template='plotly_dark',
-        height=400,
-        showlegend=False,
-        xaxis_rangeslider_visible=False,
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)'
-    )
-    
-    st.plotly_chart(demo_fig, use_container_width=True)
+    st.table(comparison_data)
 
 # Auto-refresh
-if auto_refresh and st.session_state.data_fetcher.is_running():
+if st.session_state.data_fetcher.is_running():
     with st.spinner(f"🔄 Atualizando dados... (próxima atualização em {refresh_interval}s)"):
         st.session_state.data_fetcher.update_data()
         time.sleep(refresh_interval)
@@ -964,5 +1378,5 @@ if auto_refresh and st.session_state.data_fetcher.is_running():
 
 # Footer
 st.markdown("---")
-st.markdown("💡 **Dashboard de Criptomoedas com Análise Técnica** - Gráficos de velas em tempo real | Dados de CoinGecko, CryptoCompare e CoinAPI")
-    
+st.markdown("💡 **Dashboard Avançado de Criptomoedas** - Múltiplos tipos de gráficos | Atualização configurável de 1-15s | Dados de CoinGecko, CryptoCompare e CoinAPI")
+ 
