@@ -5,9 +5,8 @@ import time
 import json
 import threading
 import websocket
-from typing import Dict, List, Callable
+from typing import Dict, List
 import queue
-import logging
 
 # Configuração da página
 st.set_page_config(
@@ -88,7 +87,7 @@ class BinanceWebSocket:
                 self.historical_data[symbol]['timestamps'].append(data['timestamp'])
                 self.historical_data[symbol]['prices'].append(data['price'])
                 
-                # Limita o histórico para os últimos 50 pontos (reduzido para melhor performance)
+                # Limita o histórico para os últimos 50 pontos
                 if len(self.historical_data[symbol]['timestamps']) > 50:
                     self.historical_data[symbol]['timestamps'].pop(0)
                     self.historical_data[symbol]['prices'].pop(0)
@@ -144,9 +143,9 @@ class BinanceWebSocket:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1)
     
-    def is_connected(self):
-        """Verifica se está conectado"""
-        return self.running and self.ws and self.thread and self.thread.is_alive()
+    def get_connection_status(self):
+        """Verifica status da conexão"""
+        return self.running and self.thread and self.thread.is_alive()
     
     def get_data(self):
         """Retorna dados atuais processando a queue"""
@@ -287,7 +286,7 @@ with st.sidebar:
         "Selecione as criptomoedas:",
         available_symbols,
         default=['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],
-        max_selections=6  # Limita para melhor performance
+        max_selections=6
     )
     
     st.markdown("---")
@@ -302,7 +301,7 @@ with st.sidebar:
                     success = st.session_state.websocket_client.start_stream(selected_symbols)
                     if success:
                         st.success("Conectando...")
-                        time.sleep(1)  # Pequena pausa para estabelecer conexão
+                        time.sleep(1)
                         st.rerun()
                     else:
                         st.error("Erro ao conectar")
@@ -322,11 +321,9 @@ with st.sidebar:
                 st.error(f"Erro: {str(e)}")
     
     # Status da conexão
-    if st.session_state.websocket_client.is_connected():
+    connection_status = st.session_state.websocket_client.get_connection_status()
+    if connection_status:
         st.success("🟢 Conectado")
-        connection_time = time.time() - st.session_state.last_update
-        if connection_time < 60:
-            st.caption(f"Ativo há {int(connection_time)}s")
     else:
         st.error("🔴 Desconectado")
     
@@ -442,7 +439,7 @@ if selected_symbols and current_data:
         total_data_points = sum([len(historical_data.get(symbol, {}).get('prices', [])) for symbol in selected_symbols])
         st.metric("Pontos de Dados", total_data_points)
 
-elif selected_symbols and st.session_state.websocket_client.is_connected():
+elif selected_symbols and st.session_state.websocket_client.get_connection_status():
     # Conectado mas sem dados ainda
     st.info("🔄 Conectado! Aguardando dados da Binance...")
     
@@ -485,7 +482,7 @@ else:
         """)
 
 # Auto-refresh
-if auto_refresh and st.session_state.websocket_client.is_connected():
+if auto_refresh and st.session_state.websocket_client.get_connection_status():
     time.sleep(refresh_interval)
     st.rerun()
 
