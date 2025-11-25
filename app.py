@@ -2,11 +2,10 @@ import streamlit as st
 import plotly.graph_objects as go
 import pandas as pd
 import time
-import json
+import requests
 import threading
-import websocket
 from typing import Dict, List
-import queue
+import json
 
 # Configuração da página
 st.set_page_config(
@@ -16,145 +15,174 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-class BinanceWebSocket:
+class CryptoDataFetcher:
     def __init__(self):
-        self.ws = None
-        self.data_queue = queue.Queue()
         self.price_data = {}
         self.historical_data = {}
         self.running = False
-        self.thread = None
         self.symbols = []
         
-    def on_message(self, ws, message):
-        """Processa mensagens recebidas do WebSocket"""
+    def fetch_binance_data(self, symbols):
+        """Busca dados da API REST da Binance"""
         try:
-            data = json.loads(message)
+            # URL da API pública da Binance (funciona globalmente)
+            url = "https://api.binance.com/api/v3/ticker/24hr"
             
-            if 'stream' in data and 'data' in data:
-                stream_data = data['data']
-                symbol = stream_data['s']
-                price = float(stream_data['c'])
-                timestamp = pd.Timestamp.now()
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
                 
-                # Coloca dados na queue para processamento thread-safe
-                self.data_queue.put({
-                    'symbol': symbol,
-                    'price': price,
-                    'change': float(stream_data['P']),
-                    'volume': float(stream_data['v']),
-                    'timestamp': timestamp
-                })
+                current_time = pd.Timestamp.now()
+                
+                for item in data:
+                    symbol = item['symbol']
+                    if symbol in symbols:
+                        price = float(item['lastPrice'])
+                        change = float(item['priceChangePercent'])
+                        volume = float(item['volume'])
+                        
+                        # Atualiza dados atuais
+                        self.price_data[symbol] = {
+                            'price': price,
+                            'change': change,
+                            'volume': volume,
+                            'timestamp': current_time
+                        }
+                        
+                        # Atualiza histórico
+                        if symbol not in self.historical_data:
+                            self.historical_data[symbol] = {'timestamps': [], 'prices': []}
+                        
+                        self.historical_data[symbol]['timestamps'].append(current_time)
+                        self.historical_data[symbol]['prices'].append(price)
+                        
+                        # Limita histórico
+                        if len(self.historical_data[symbol]['timestamps']) > 50:
+                            self.historical_data[symbol]['timestamps'].pop(0)
+                            self.historical_data[symbol]['prices'].pop(0)
+                
+                return True
+            else:
+                st.error(f"Erro na API: {response.status_code}")
+                return False
                 
         except Exception as e:
-            print(f"Erro ao processar mensagem: {e}")
-    
-    def on_error(self, ws, error):
-        """Trata erros da conexão WebSocket"""
-        print(f"Erro WebSocket: {error}")
-        self.running = False
-    
-    def on_close(self, ws, close_status_code, close_msg):
-        """Trata fechamento da conexão"""
-        print("Conexão WebSocket fechada")
-        self.running = False
-    
-    def on_open(self, ws):
-        """Trata abertura da conexão"""
-        print("Conexão WebSocket estabelecida")
-        self.running = True
-    
-    def process_queue(self):
-        """Processa dados da queue de forma thread-safe"""
-        processed_data = False
-        try:
-            while not self.data_queue.empty():
-                data = self.data_queue.get_nowait()
-                symbol = data['symbol']
-                
-                # Atualiza dados de preço atual
-                self.price_data[symbol] = {
-                    'price': data['price'],
-                    'change': data['change'],
-                    'volume': data['volume'],
-                    'timestamp': data['timestamp']
-                }
-                
-                # Mantém histórico para gráficos
-                if symbol not in self.historical_data:
-                    self.historical_data[symbol] = {'timestamps': [], 'prices': []}
-                
-                self.historical_data[symbol]['timestamps'].append(data['timestamp'])
-                self.historical_data[symbol]['prices'].append(data['price'])
-                
-                # Limita o histórico para os últimos 50 pontos
-                if len(self.historical_data[symbol]['timestamps']) > 50:
-                    self.historical_data[symbol]['timestamps'].pop(0)
-                    self.historical_data[symbol]['prices'].pop(0)
-                
-                processed_data = True
-                
-        except queue.Empty:
-            pass
-        
-        return processed_data
-    
-    def start_stream(self, symbols: List[str]):
-        """Inicia stream para símbolos específicos"""
-        if self.running:
-            self.stop_stream()
-        
-        self.symbols = symbols
-        
-        # Converte símbolos para lowercase (padrão Binance)
-        streams = [f"{symbol.lower()}@ticker" for symbol in symbols]
-        stream_names = "/".join(streams)
-        
-        url = f"wss://stream.binance.com:9443/stream?streams={stream_names}"
-        
-        try:
-            self.ws = websocket.WebSocketApp(
-                url,
-                on_open=self.on_open,
-                on_message=self.on_message,
-                on_error=self.on_error,
-                on_close=self.on_close
-            )
-            
-            # Inicia em thread separada
-            self.thread = threading.Thread(target=self.ws.run_forever, kwargs={
-                'ping_interval': 20,
-                'ping_timeout': 10
-            })
-            self.thread.daemon = True
-            self.thread.start()
-            
-            return True
-            
-        except Exception as e:
-            print(f"Erro ao iniciar stream: {e}")
+            st.error(f"Erro ao buscar dados: {str(e)}")
             return False
     
-    def stop_stream(self):
-        """Para o stream WebSocket"""
-        self.running = False
-        if self.ws:
-            self.ws.close()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1)
+    def fetch_alternative_data(self, symbols):
+        """Busca dados de fonte alternativa (CoinGecko)"""
+        try:
+            # Mapeia símbolos Binance para IDs CoinGecko
+            symbol_map = {
+                'BTCUSDT': 'bitcoin',
+                'ETHUSDT': 'ethereum',
+                'BNBUSDT': 'binancecoin',
+                'ADAUSDT': 'cardano',
+                'XRPUSDT': 'ripple',
+                'SOLUSDT': 'solana',
+                'DOTUSDT': 'polkadot',
+                'DOGEUSDT': 'dogecoin',
+                'AVAXUSDT': 'avalanche-2',
+                'LINKUSDT': 'chainlink',
+                'MATICUSDT': 'matic-network',
+                'LTCUSDT': 'litecoin',
+                'UNIUSDT': 'uniswap',
+                'ATOMUSDT': 'cosmos',
+                'FILUSDT': 'filecoin'
+            }
+            
+            # Filtra símbolos disponíveis
+            available_symbols = [s for s in symbols if s in symbol_map]
+            if not available_symbols:
+                return False
+            
+            # Monta lista de IDs
+            ids = ','.join([symbol_map[s] for s in available_symbols])
+            
+            url = f"https://api.coingecko.com/api/v3/simple/price"
+            params = {
+                'ids': ids,
+                'vs_currencies': 'usd',
+                'include_24hr_change': 'true'
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                current_time = pd.Timestamp.now()
+                
+                for symbol in available_symbols:
+                    coin_id = symbol_map[symbol]
+                    if coin_id in data:
+                        coin_data = data[coin_id]
+                        price = float(coin_data['usd'])
+                        change = float(coin_data.get('usd_24h_change', 0))
+                        
+                        # Atualiza dados atuais
+                        self.price_data[symbol] = {
+                            'price': price,
+                            'change': change,
+                            'volume': 0,  # CoinGecko free tier não tem volume
+                            'timestamp': current_time
+                        }
+                        
+                        # Atualiza histórico
+                        if symbol not in self.historical_data:
+                            self.historical_data[symbol] = {'timestamps': [], 'prices': []}
+                        
+                        self.historical_data[symbol]['timestamps'].append(current_time)
+                        self.historical_data[symbol]['prices'].append(price)
+                        
+                        # Limita histórico
+                        if len(self.historical_data[symbol]['timestamps']) > 50:
+                            self.historical_data[symbol]['timestamps'].pop(0)
+                            self.historical_data[symbol]['prices'].pop(0)
+                
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            print(f"Erro CoinGecko: {str(e)}")
+            return False
     
-    def get_connection_status(self):
-        """Verifica status da conexão"""
-        return self.running and self.thread and self.thread.is_alive()
+    def start_fetching(self, symbols):
+        """Inicia busca de dados"""
+        self.symbols = symbols
+        self.running = True
+        
+        # Tenta Binance primeiro, depois CoinGecko
+        success = self.fetch_binance_data(symbols)
+        if not success:
+            success = self.fetch_alternative_data(symbols)
+        
+        return success
+    
+    def stop_fetching(self):
+        """Para a busca de dados"""
+        self.running = False
+    
+    def update_data(self):
+        """Atualiza dados"""
+        if self.running and self.symbols:
+            success = self.fetch_binance_data(self.symbols)
+            if not success:
+                success = self.fetch_alternative_data(self.symbols)
+            return success
+        return False
     
     def get_data(self):
-        """Retorna dados atuais processando a queue"""
-        self.process_queue()
+        """Retorna dados atuais"""
         return self.price_data, self.historical_data
+    
+    def is_running(self):
+        """Verifica se está ativo"""
+        return self.running
 
 # Inicialização do estado da sessão
-if 'websocket_client' not in st.session_state:
-    st.session_state.websocket_client = BinanceWebSocket()
+if 'data_fetcher' not in st.session_state:
+    st.session_state.data_fetcher = CryptoDataFetcher()
     st.session_state.last_update = time.time()
 
 def create_price_chart(symbol, historical_data):
@@ -200,7 +228,7 @@ def create_price_chart(symbol, historical_data):
     fig.update_layout(
         title=f'{symbol.replace("USDT", "/USDT")}',
         xaxis_title='',
-        yaxis_title='Preço (USDT)',
+        yaxis_title='Preço (USD)',
         template='plotly_dark',
         height=350,
         showlegend=False,
@@ -209,7 +237,7 @@ def create_price_chart(symbol, historical_data):
         margin=dict(l=0, r=0, t=40, b=0)
     )
     
-    # Formatar eixo Y para mostrar preços com precisão adequada
+    # Formatar eixo Y
     if prices:
         max_price = max(prices)
         if max_price < 1:
@@ -295,37 +323,31 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🚀 Conectar", type="primary", use_container_width=True):
+        if st.button("🚀 Iniciar", type="primary", use_container_width=True):
             if selected_symbols:
-                try:
-                    success = st.session_state.websocket_client.start_stream(selected_symbols)
+                with st.spinner("Buscando dados..."):
+                    success = st.session_state.data_fetcher.start_fetching(selected_symbols)
                     if success:
-                        st.success("Conectando...")
+                        st.success("Dados carregados!")
                         time.sleep(1)
                         st.rerun()
                     else:
-                        st.error("Erro ao conectar")
-                except Exception as e:
-                    st.error(f"Erro: {str(e)}")
+                        st.error("Erro ao buscar dados")
             else:
                 st.warning("Selecione pelo menos uma criptomoeda")
     
     with col2:
         if st.button("🛑 Parar", use_container_width=True):
-            try:
-                st.session_state.websocket_client.stop_stream()
-                st.info("Desconectado")
-                time.sleep(0.5)
-                st.rerun()
-            except Exception as e:
-                st.error(f"Erro: {str(e)}")
+            st.session_state.data_fetcher.stop_fetching()
+            st.info("Parado")
+            time.sleep(0.5)
+            st.rerun()
     
-    # Status da conexão
-    connection_status = st.session_state.websocket_client.get_connection_status()
-    if connection_status:
-        st.success("🟢 Conectado")
+    # Status
+    if st.session_state.data_fetcher.is_running():
+        st.success("🟢 Ativo")
     else:
-        st.error("🔴 Desconectado")
+        st.error("🔴 Inativo")
     
     st.markdown("---")
     
@@ -333,20 +355,19 @@ with st.sidebar:
     auto_refresh = st.checkbox("Auto-refresh", value=True)
     refresh_interval = st.select_slider(
         "Intervalo de atualização:",
-        options=[1, 2, 3, 5],
-        value=2,
+        options=[10, 30, 60, 120],
+        value=30,
         format_func=lambda x: f"{x}s"
     )
 
 # Área principal
-current_data, historical_data = st.session_state.websocket_client.get_data()
+current_data, historical_data = st.session_state.data_fetcher.get_data()
 
 if selected_symbols and current_data:
     
     # Métricas em tempo real
     st.subheader("📊 Preços Atuais")
     
-    # Organiza métricas em grid responsivo
     num_cols = min(len(selected_symbols), 3)
     cols = st.columns(num_cols)
     
@@ -355,7 +376,7 @@ if selected_symbols and current_data:
             data = current_data[symbol]
             
             with cols[i % num_cols]:
-                # Formatação do preço baseada no valor
+                # Formatação do preço
                 if data['price'] < 1:
                     price_str = f"${data['price']:.6f}"
                 elif data['price'] < 10:
@@ -366,7 +387,7 @@ if selected_symbols and current_data:
                 change_symbol = "+" if data['change'] >= 0 else ""
                 
                 st.metric(
-                    label=symbol.replace('USDT', '/USDT'),
+                    label=symbol.replace('USDT', '/USD'),
                     value=price_str,
                     delta=f"{change_symbol}{data['change']:.2f}%"
                 )
@@ -374,16 +395,14 @@ if selected_symbols and current_data:
     st.markdown("---")
     
     # Gráficos individuais
-    st.subheader("📈 Gráficos em Tempo Real")
+    st.subheader("📈 Histórico de Preços")
     
-    # Layout responsivo para gráficos
     num_selected = len(selected_symbols)
     
     if num_selected == 1:
         fig = create_price_chart(selected_symbols[0], historical_data)
         st.plotly_chart(fig, use_container_width=True)
     elif num_selected <= 4:
-        # Grid 2x2
         for i in range(0, num_selected, 2):
             col1, col2 = st.columns(2)
             
@@ -397,7 +416,6 @@ if selected_symbols and current_data:
                     fig = create_price_chart(selected_symbols[i + 1], historical_data)
                     st.plotly_chart(fig, use_container_width=True)
     else:
-        # Grid 3x2 para mais de 4
         for i in range(0, num_selected, 3):
             col1, col2, col3 = st.columns(3)
             
@@ -439,53 +457,45 @@ if selected_symbols and current_data:
         total_data_points = sum([len(historical_data.get(symbol, {}).get('prices', [])) for symbol in selected_symbols])
         st.metric("Pontos de Dados", total_data_points)
 
-elif selected_symbols and st.session_state.websocket_client.get_connection_status():
-    # Conectado mas sem dados ainda
-    st.info("🔄 Conectado! Aguardando dados da Binance...")
-    
-    # Placeholder para gráficos
-    with st.spinner("Carregando dados..."):
-        time.sleep(2)
-        st.rerun()
-
 else:
     # Tela inicial
-    st.info("👈 Selecione as criptomoedas na barra lateral e clique em 'Conectar' para começar!")
+    st.info("👈 Selecione as criptomoedas na barra lateral e clique em 'Iniciar' para começar!")
     
-    # Recursos do dashboard
     st.subheader("🎯 Recursos do Dashboard:")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
         st.markdown("""
-        **📊 Métricas em Tempo Real**
-        - Preços atualizados instantaneamente
-        - Variação percentual
-        - Volume de negociação
+        **📊 Dados em Tempo Real**
+        - Preços atualizados
+        - Variação 24h
+        - Múltiplas fontes de dados
         """)
     
     with col2:
         st.markdown("""
         **📈 Gráficos Interativos**
-        - Histórico de preços em tempo real
-        - Gráficos individuais por moeda
+        - Histórico de preços
+        - Gráficos individuais
         - Comparação de performance
         """)
     
     with col3:
         st.markdown("""
-        **⚡ Conexão WebSocket**
-        - Dados direto da Binance
-        - Baixa latência
-        - Múltiplas criptomoedas
+        **🌐 APIs Confiáveis**
+        - Binance API
+        - CoinGecko (fallback)
+        - Dados globalmente acessíveis
         """)
 
 # Auto-refresh
-if auto_refresh and st.session_state.websocket_client.get_connection_status():
+if auto_refresh and st.session_state.data_fetcher.is_running():
+    # Atualiza dados
+    st.session_state.data_fetcher.update_data()
     time.sleep(refresh_interval)
     st.rerun()
 
 # Footer
 st.markdown("---")
-st.markdown("💡 **Dica:** Este dashboard utiliza WebSocket da Binance para dados em tempo real. Para melhor performance, limite a 6 criptomoedas simultaneamente.")
+st.markdown("💡 **Fonte de Dados:** Binance API (principal) e CoinGecko API (fallback). Atualização automática configurável.")
